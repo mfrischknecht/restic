@@ -361,8 +361,13 @@ func (r *Repository) SetIndex(i restic.Index) error {
 }
 
 // SaveIndex saves an index in the repository.
-func SaveIndex(ctx context.Context, repo restic.Repository, index *Index) (restic.ID, error) {
+func SaveIndex(ctx context.Context, repo restic.Repository, idx restic.FileIndex) (restic.ID, error) {
 	buf := bytes.NewBuffer(nil)
+
+	index, ok := idx.(*Index)
+	if !ok {
+		return restic.ID{}, errors.New("index is not standard index")
+	}
 
 	err := index.Finalize(buf)
 	if err != nil {
@@ -373,7 +378,7 @@ func SaveIndex(ctx context.Context, repo restic.Repository, index *Index) (resti
 }
 
 // saveIndex saves all indexes in the backend.
-func (r *Repository) saveIndex(ctx context.Context, indexes ...*Index) error {
+func (r *Repository) saveIndex(ctx context.Context, indexes ...restic.FileIndex) error {
 	for i, idx := range indexes {
 		debug.Log("Saving index %d", i)
 
@@ -403,6 +408,10 @@ const loadIndexParallelism = 4
 // LoadIndex loads all index files from the backend in parallel and stores them
 // in the master index. The first error that occurred is returned.
 func (r *Repository) LoadIndex(ctx context.Context) error {
+	return r.LoadIndexWithIndexType(ctx, ReloadIndex)
+}
+
+func (r *Repository) LoadIndexWithIndexType(ctx context.Context, loadType int) error {
 	debug.Log("Loading index")
 
 	// track spawned goroutines using wg, create a new context which is
@@ -414,7 +423,7 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 		Size int64
 	}
 	ch := make(chan FileInfo)
-	indexCh := make(chan *Index)
+	indexCh := make(chan restic.FileIndex)
 
 	// send list of index files through ch, which is closed afterwards
 	wg.Go(func() error {
@@ -434,7 +443,7 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 		var buf []byte
 		for fi := range ch {
 			var err error
-			var idx *Index
+			var idx restic.FileIndex
 			idx, buf, err = LoadIndexWithDecoder(ctx, r, buf[:0], fi.ID, DecodeIndex)
 			if err != nil && errors.Cause(err) == ErrOldIndexFormat {
 				idx, buf, err = LoadIndexWithDecoder(ctx, r, buf[:0], fi.ID, DecodeOldIndex)
@@ -442,6 +451,13 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 
 			if err != nil {
 				return errors.Wrap(err, fmt.Sprintf("unable to load index %v", fi.ID.Str()))
+			}
+
+			switch loadType {
+			case LowMemIndex:
+				idx = MakeIndexLowMemFromIndex(ctx, r, idx)
+			case ReloadIndex:
+				idx = MakeIndexReloadFromIndex(ctx, r, idx)
 			}
 
 			select {
@@ -553,7 +569,7 @@ func (r *Repository) PrepareCache(indexIDs restic.IDSet) error {
 }
 
 // LoadIndex loads the index id from backend and returns it.
-func LoadIndex(ctx context.Context, repo restic.Repository, id restic.ID) (*Index, error) {
+func LoadIndex(ctx context.Context, repo restic.Repository, id restic.ID) (restic.FileIndex, error) {
 	idx, _, err := LoadIndexWithDecoder(ctx, repo, nil, id, DecodeIndex)
 	if err == nil {
 		return idx, nil

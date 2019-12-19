@@ -9,9 +9,16 @@ import (
 	"github.com/restic/restic/internal/debug"
 )
 
+const (
+	StandardIndex = 0
+	LowMemIndex   = 1
+	ReloadIndex   = 2
+	DiscIndex     = 3
+)
+
 // MasterIndex is a collection of indexes and IDs of chunks that are in the process of being saved.
 type MasterIndex struct {
-	idx      []*Index
+	idx      []restic.FileIndex
 	idxMutex sync.RWMutex
 }
 
@@ -93,7 +100,7 @@ func (mi *MasterIndex) Count(t restic.BlobType) (n uint) {
 }
 
 // Insert adds a new index to the MasterIndex.
-func (mi *MasterIndex) Insert(idx *Index) {
+func (mi *MasterIndex) Insert(idx restic.FileIndex) {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
@@ -101,7 +108,7 @@ func (mi *MasterIndex) Insert(idx *Index) {
 }
 
 // Remove deletes an index from the MasterIndex.
-func (mi *MasterIndex) Remove(index *Index) {
+func (mi *MasterIndex) Remove(index restic.FileIndex) {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
@@ -131,11 +138,11 @@ func (mi *MasterIndex) Store(pb restic.PackedBlob) {
 }
 
 // NotFinalIndexes returns all indexes that have not yet been saved.
-func (mi *MasterIndex) NotFinalIndexes() []*Index {
+func (mi *MasterIndex) NotFinalIndexes() []restic.FileIndex {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
-	var list []*Index
+	var list []restic.FileIndex
 
 	for _, idx := range mi.idx {
 		if !idx.Final() {
@@ -148,11 +155,11 @@ func (mi *MasterIndex) NotFinalIndexes() []*Index {
 }
 
 // FullIndexes returns all indexes that are full.
-func (mi *MasterIndex) FullIndexes() []*Index {
+func (mi *MasterIndex) FullIndexes() []restic.FileIndex {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
-	var list []*Index
+	var list []restic.FileIndex
 
 	debug.Log("checking %d indexes", len(mi.idx))
 	for _, idx := range mi.idx {
@@ -161,7 +168,7 @@ func (mi *MasterIndex) FullIndexes() []*Index {
 			continue
 		}
 
-		if IndexFull(idx) {
+		if idx.IsFull() {
 			debug.Log("index %p is full", idx)
 			list = append(list, idx)
 		} else {
@@ -174,7 +181,7 @@ func (mi *MasterIndex) FullIndexes() []*Index {
 }
 
 // All returns all indexes.
-func (mi *MasterIndex) All() []*Index {
+func (mi *MasterIndex) All() []restic.FileIndex {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
@@ -202,6 +209,34 @@ func (mi *MasterIndex) Each(ctx context.Context) <-chan restic.PackedBlob {
 				case <-ctx.Done():
 					return
 				case ch <- pb:
+				}
+			}
+		}
+	}()
+
+	return ch
+}
+
+// Each returns a channel that yields all blobs known to the index. When the
+// context is cancelled, the background goroutine terminates. This blocks any
+// modification of the index.
+func (mi *MasterIndex) EachBlobHandle(ctx context.Context) <-chan restic.BlobHandle {
+	mi.idxMutex.RLock()
+
+	ch := make(chan restic.BlobHandle)
+
+	go func() {
+		defer mi.idxMutex.RUnlock()
+		defer func() {
+			close(ch)
+		}()
+
+		for _, idx := range mi.idx {
+			for h := range idx.EachBlobHandle(ctx) {
+				select {
+				case <-ctx.Done():
+					return
+				case ch <- h:
 				}
 			}
 		}

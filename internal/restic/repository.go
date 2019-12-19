@@ -67,4 +67,23 @@ type Index interface {
 	// the context is cancelled, the background goroutine terminates. This
 	// blocks any modification of the index.
 	Each(ctx context.Context) <-chan PackedBlob
+
+	// Each returns a channel that yields all handles to blobs known to the index. When
+	// the context is cancelled, the background goroutine terminates. This
+	// blocks any modification of the index.
+	EachBlobHandle(ctx context.Context) <-chan BlobHandle
+}
+
+// Index keeps track of the blobs are stored within files.
+type FileIndex interface {
+	Index
+	LookupSize(ID, BlobType) (uint, bool)
+	ListPack(ID) []PackedBlob
+	Final() bool
+	IsFull() bool
+	Store(PackedBlob)
+	ID() (ID, error)
+	Packs() IDSet
+	TreePacks() IDs
+	Supersedes() IDs
 }

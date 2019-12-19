@@ -65,8 +65,8 @@ const (
 	indexMaxAge   = 15 * time.Minute
 )
 
-// IndexFull returns true iff the index is "full enough" to be saved as a preliminary index.
-var IndexFull = func(idx *Index) bool {
+// IsFull returns true iff the index is "full enough" to be saved as a preliminary index.
+func (idx *Index) IsFull() bool {
 	idx.m.Lock()
 	defer idx.m.Unlock()
 
@@ -233,6 +233,29 @@ func (idx *Index) Each(ctx context.Context) <-chan restic.PackedBlob {
 					PackID: blob.packID,
 				}:
 				}
+			}
+		}
+	}()
+
+	return ch
+}
+
+func (idx *Index) EachBlobHandle(ctx context.Context) <-chan restic.BlobHandle {
+	idx.m.Lock()
+
+	ch := make(chan restic.BlobHandle)
+
+	go func() {
+		defer idx.m.Unlock()
+		defer func() {
+			close(ch)
+		}()
+
+		for h := range idx.pack {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- h:
 			}
 		}
 	}()
