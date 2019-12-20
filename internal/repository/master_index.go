@@ -13,7 +13,7 @@ const (
 	StandardIndex = 0
 	LowMemIndex   = 1
 	ReloadIndex   = 2
-	DiscIndex     = 3
+	BoltIndex     = 3
 )
 
 // MasterIndex is a collection of indexes and IDs of chunks that are in the process of being saved.

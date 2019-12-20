@@ -59,6 +59,7 @@ type GlobalOptions struct {
 	CACerts         []string
 	TLSClientCert   string
 	CleanupCache    bool
+	Index           string
 
 	LimitUploadKb   int
 	LimitDownloadKb int
@@ -110,6 +111,7 @@ func init() {
 	f.IntVar(&globalOptions.LimitUploadKb, "limit-upload", 0, "limits uploads to a maximum rate in KiB/s. (default: unlimited)")
 	f.IntVar(&globalOptions.LimitDownloadKb, "limit-download", 0, "limits downloads to a maximum rate in KiB/s. (default: unlimited)")
 	f.StringSliceVarP(&globalOptions.Options, "option", "o", []string{}, "set extended option (`key=value`, can be specified multiple times)")
+	f.StringVarP(&globalOptions.Index, "index", "i", "standard", "which index type to use (standard, low-mem, reload, bolt)")
 
 	restoreTerminal()
 }
@@ -365,6 +367,16 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 	})
 
 	s := repository.New(be)
+	switch opts.Index {
+	case "standard":
+		s.IndexType = repository.StandardIndex
+	case "low-mem":
+		s.IndexType = repository.LowMemIndex
+	case "reload":
+		s.IndexType = repository.ReloadIndex
+	case "bolt":
+		s.IndexType = repository.BoltIndex
+	}
 
 	passwordTriesLeft := 1
 	if stdinIsTerminal() && opts.password == "" {

@@ -28,6 +28,7 @@ type Repository struct {
 	keyName string
 	idx     *MasterIndex
 	restic.Cache
+	IndexType int
 
 	treePM *packerManager
 	dataPM *packerManager
@@ -408,7 +409,7 @@ const loadIndexParallelism = 4
 // LoadIndex loads all index files from the backend in parallel and stores them
 // in the master index. The first error that occurred is returned.
 func (r *Repository) LoadIndex(ctx context.Context) error {
-	return r.LoadIndexWithIndexType(ctx, ReloadIndex)
+	return r.LoadIndexWithIndexType(ctx, r.IndexType)
 }
 
 func (r *Repository) LoadIndexWithIndexType(ctx context.Context, loadType int) error {
@@ -458,6 +459,8 @@ func (r *Repository) LoadIndexWithIndexType(ctx context.Context, loadType int) e
 				idx = MakeIndexLowMemFromIndex(ctx, r, idx)
 			case ReloadIndex:
 				idx = MakeIndexReloadFromIndex(ctx, r, idx)
+			case BoltIndex:
+				idx = MakeIndexBoltFromIndex(ctx, r, idx)
 			}
 
 			select {
