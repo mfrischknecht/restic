@@ -86,5 +86,4 @@ type FileIndex interface {
 	Packs() IDSet
 	TreePacks() IDs
 	Supersedes() IDs
-	AddFromIndex(FileIndex) error
 }

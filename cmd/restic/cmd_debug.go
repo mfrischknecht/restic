@@ -111,12 +111,13 @@ func dumpIndexes(repo restic.Repository) error {
 	return repo.List(context.TODO(), restic.IndexFile, func(id restic.ID, size int64) error {
 		fmt.Printf("index_id: %v\n", id)
 
-		idx, err := repository.LoadIndex(context.TODO(), repo, id)
-		if err != nil {
-			return err
-		}
+		//idx, err := repository.LoadIndex(context.TODO(), repo, id)
+		//if err != nil {
+		//	return err
+		//}
 
-		return idx.Dump(os.Stdout)
+		// TODO!
+		return nil // idx.Dump(os.Stdout)
 	})
 }
 

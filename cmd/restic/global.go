@@ -111,7 +111,7 @@ func init() {
 	f.IntVar(&globalOptions.LimitUploadKb, "limit-upload", 0, "limits uploads to a maximum rate in KiB/s. (default: unlimited)")
 	f.IntVar(&globalOptions.LimitDownloadKb, "limit-download", 0, "limits downloads to a maximum rate in KiB/s. (default: unlimited)")
 	f.StringSliceVarP(&globalOptions.Options, "option", "o", []string{}, "set extended option (`key=value`, can be specified multiple times)")
-	f.StringVarP(&globalOptions.Index, "index", "i", "standard", "which index type to use (standard, low-mem, reload, bolt)")
+	f.StringVarP(&globalOptions.Index, "index", "i", "standard", "which index type to use (standard, low-mem, low-mem2, reload, bolt)")
 
 	restoreTerminal()
 }
@@ -372,6 +372,8 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 		s.IndexType = repository.StandardIndex
 	case "low-mem":
 		s.IndexType = repository.LowMemIndex
+	case "low-mem2":
+		s.IndexType = repository.LowMemIndex2
 	case "reload":
 		s.IndexType = repository.ReloadIndex
 	case "bolt":

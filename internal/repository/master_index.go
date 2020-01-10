@@ -12,8 +12,9 @@ import (
 const (
 	StandardIndex = 0
 	LowMemIndex   = 1
-	ReloadIndex   = 2
-	BoltIndex     = 3
+	LowMemIndex2  = 2
+	ReloadIndex   = 3
+	BoltIndex     = 4
 )
 
 // MasterIndex is a collection of indexes and IDs of chunks that are in the process of being saved.

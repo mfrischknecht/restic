@@ -457,6 +457,8 @@ func (r *Repository) LoadIndexWithIndexType(ctx context.Context, loadType int) e
 			switch loadType {
 			case LowMemIndex:
 				idx = MakeIndexLowMemFromIndex(ctx, r, idx)
+			case LowMemIndex2:
+				idx = MakeIndexLowMem2FromIndex(ctx, r, idx)
 			case ReloadIndex:
 				idx = MakeIndexReloadFromIndex(ctx, r, idx)
 			case BoltIndex:
