@@ -5,7 +5,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
+
+	//"fmt"
 
 	"github.com/restic/restic/internal/errors"
 
@@ -302,12 +303,13 @@ func (k *Key) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
 
 	ret, out := sliceForAppend(dst, len(plaintext)+k.Overhead())
 
-	c, err := aes.NewCipher(k.EncryptionKey[:])
-	if err != nil {
-		panic(fmt.Sprintf("unable to create cipher: %v", err))
-	}
-	e := cipher.NewCTR(c, nonce)
-	e.XORKeyStream(out, plaintext)
+	//c, err := aes.NewCipher(k.EncryptionKey[:])
+	//if err != nil {
+	//		panic(fmt.Sprintf("unable to create cipher: %v", err))
+	//	}
+	//e := cipher.NewCTR(c, nonce)
+	//	e.XORKeyStream(out, plaintext)
+	copy(out, plaintext)
 
 	mac := poly1305MAC(out[:len(plaintext)], nonce, &k.MACKey)
 	copy(out[len(plaintext):], mac)
@@ -355,12 +357,13 @@ func (k *Key) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error
 
 	ret, out := sliceForAppend(dst, len(ct))
 
-	c, err := aes.NewCipher(k.EncryptionKey[:])
-	if err != nil {
-		panic(fmt.Sprintf("unable to create cipher: %v", err))
-	}
-	e := cipher.NewCTR(c, nonce)
-	e.XORKeyStream(out, ct)
+	//c, err := aes.NewCipher(k.EncryptionKey[:])
+	//if err != nil {
+	//	panic(fmt.Sprintf("unable to create cipher: %v", err))
+	//}
+	//e := cipher.NewCTR(c, nonce)
+	//e.XORKeyStream(out, ct)
+	copy(out, ct)
 
 	return ret, nil
 }
