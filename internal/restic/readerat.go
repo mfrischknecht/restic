@@ -9,28 +9,37 @@ import (
 )
 
 type backendReaderAt struct {
-	be Backend
+	be CachedBackend
 	h  Handle
+	t  BlobType
 }
 
 func (brd backendReaderAt) ReadAt(p []byte, offset int64) (n int, err error) {
-	return ReadAt(context.TODO(), brd.be, brd.h, offset, p)
+	return ReadAt(context.TODO(), brd.be, brd.h, brd.t, offset, p)
 }
 
 // ReaderAt returns an io.ReaderAt for a file in the backend.
-func ReaderAt(be Backend, h Handle) io.ReaderAt {
+func ReaderAt(be CachedBackend, h Handle) io.ReaderAt {
 	return backendReaderAt{be: be, h: h}
 }
 
 // ReadAt reads from the backend handle h at the given position.
-func ReadAt(ctx context.Context, be Backend, h Handle, offset int64, p []byte) (n int, err error) {
+func ReadAt(ctx context.Context, be CachedBackend, h Handle, t BlobType, offset int64, p []byte) (n int, err error) {
 	debug.Log("ReadAt(%v) at %v, len %v", h, offset, len(p))
 
-	err = be.Load(ctx, h, len(p), offset, func(rd io.Reader) (ierr error) {
-		n, ierr = io.ReadFull(rd, p)
+	if t == DataBlob {
+		err = be.LoadDirect(ctx, h, len(p), offset, func(rd io.Reader) (ierr error) {
+			n, ierr = io.ReadFull(rd, p)
 
-		return ierr
-	})
+			return ierr
+		})
+	} else {
+		err = be.Load(ctx, h, len(p), offset, func(rd io.Reader) (ierr error) {
+			n, ierr = io.ReadFull(rd, p)
+
+			return ierr
+		})
+	}
 	if err != nil {
 		return 0, err
 	}

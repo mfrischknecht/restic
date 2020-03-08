@@ -57,7 +57,7 @@ func randomData(n int) (restic.Handle, []byte) {
 }
 
 func TestBackend(t *testing.T) {
-	be := mem.New()
+	be := CachedBackend(mem.New())
 
 	c, cleanup := TestNewCache(t)
 	defer cleanup()
@@ -68,25 +68,25 @@ func TestBackend(t *testing.T) {
 
 	// save directly in backend
 	save(t, be, h, data)
-	if c.Has(h) {
+	if c.Has(context.TODO(), h) {
 		t.Errorf("cache has file too early")
 	}
 
 	// load data via cache
 	loadAndCompare(t, wbe, h, data)
-	if !c.Has(h) {
+	if !c.Has(context.TODO(), h) {
 		t.Errorf("cache doesn't have file after load")
 	}
 
 	// remove via cache
 	remove(t, wbe, h)
-	if c.Has(h) {
+	if c.Has(context.TODO(), h) {
 		t.Errorf("cache has file after remove")
 	}
 
 	// save via cache
 	save(t, wbe, h, data)
-	if !c.Has(h) {
+	if !c.Has(context.TODO(), h) {
 		t.Errorf("cache doesn't have file after load")
 	}
 
@@ -98,7 +98,7 @@ func TestBackend(t *testing.T) {
 
 	// remove directly
 	remove(t, be, h)
-	if !c.Has(h) {
+	if !c.Has(context.TODO(), h) {
 		t.Errorf("file not in cache any more")
 	}
 
@@ -112,7 +112,7 @@ func TestBackend(t *testing.T) {
 		t.Errorf("Stat() returned error that does not match IsNotExist(): %v", err)
 	}
 
-	if c.Has(h) {
+	if c.Has(context.TODO(), h) {
 		t.Errorf("removed file still in cache after stat")
 	}
 }
@@ -163,7 +163,7 @@ func TestErrorBackend(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	wrappedBE := c.Wrap(errBackend)
+	wrappedBE := c.Wrap(CachedBackend(errBackend))
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/restic/restic/internal/backend/local"
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/fs"
 	"github.com/restic/restic/internal/restic"
@@ -17,10 +19,16 @@ import (
 
 // Cache manages a local cache.
 type Cache struct {
-	Path             string
-	Base             string
-	Created          bool
-	PerformReadahead func(restic.Handle) bool
+	restic.Backend
+	NotCache map[restic.FileType]bool
+	Base     string
+	Created  bool
+}
+
+var DefaultNotCache = map[restic.FileType]bool{
+	restic.KeyFile:    true,
+	restic.ConfigFile: true,
+	restic.LockFile:   true,
 }
 
 const dirMode = 0700
@@ -48,12 +56,6 @@ const cacheVersion = 1
 
 // ensure Cache implements restic.Cache
 var _ restic.Cache = &Cache{}
-
-var cacheLayoutPaths = map[restic.FileType]string{
-	restic.DataFile:     "data",
-	restic.SnapshotFile: "snapshots",
-	restic.IndexFile:    "index",
-}
 
 const cachedirTagSignature = "Signature: 8a477f597d28d172789f06886806bc55\n"
 
@@ -144,20 +146,17 @@ func New(id string, basedir string) (c *Cache, err error) {
 		}
 	}
 
-	for _, p := range cacheLayoutPaths {
-		if err = fs.MkdirAll(filepath.Join(cachedir, p), dirMode); err != nil {
-			return nil, err
-		}
+	be, err := local.Create(local.Config{Path: cachedir, Layout: "cache"})
+
+	if err != nil && err != local.ErrConfigExists {
+		return nil, err
 	}
 
 	c = &Cache{
-		Path:    cachedir,
-		Base:    basedir,
-		Created: created,
-		PerformReadahead: func(restic.Handle) bool {
-			// do not perform readahead by default
-			return false
-		},
+		Backend:  be,
+		Base:     basedir,
+		Created:  created,
+		NotCache: DefaultNotCache,
 	}
 
 	return c, nil
@@ -253,28 +252,42 @@ func IsOld(t time.Time, maxAge time.Duration) bool {
 	return t.Before(oldest)
 }
 
-// errNoSuchFile is returned when a file is not cached.
-type errNoSuchFile struct {
-	Type string
-	Name string
-}
-
-func (e errNoSuchFile) Error() string {
-	return fmt.Sprintf("file %v (%v) is not cached", e.Name, e.Type)
-}
-
-// IsNotExist returns true if the error was caused by a non-existing file.
-func (c *Cache) IsNotExist(err error) bool {
-	_, ok := errors.Cause(err).(errNoSuchFile)
-	return ok
-}
-
 // Wrap returns a backend with a cache.
-func (c *Cache) Wrap(be restic.Backend) restic.Backend {
+func (c *Cache) Wrap(be restic.CachedBackend) restic.CachedBackend {
 	return newBackend(be, c)
 }
 
 // BaseDir returns the base directory.
 func (c *Cache) BaseDir() string {
 	return c.Base
+}
+
+// Wrap returns a backend with a cache.
+func (c *Cache) Clear(tpe restic.FileType, IDs restic.IDSet) error {
+	ctx := context.TODO()
+	return c.Backend.List(ctx, tpe, func(fi restic.FileInfo) error {
+		ID, err := restic.ParseID(fi.Name)
+		if err != nil {
+			return err
+		}
+		if IDs.Has(ID) {
+			return nil
+		}
+		// remove and ignore errors
+		_ = c.Backend.Remove(ctx, restic.Handle{Type: tpe, Name: fi.Name})
+		return nil
+	})
+}
+
+func (c *Cache) Has(ctx context.Context, h restic.Handle) bool {
+	// TODO: Error handling!
+	has, _ := c.Backend.Test(ctx, h)
+	return has
+}
+
+func (c *Cache) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
+	if _, ok := c.NotCache[h.Type]; ok {
+		return nil
+	}
+	return c.Backend.Save(ctx, h, rd)
 }

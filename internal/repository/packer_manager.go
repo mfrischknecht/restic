@@ -103,27 +103,17 @@ func (r *Repository) savePacker(ctx context.Context, t restic.BlobType, p *Packe
 		return err
 	}
 
-	err = r.be.Save(ctx, h, rd)
+	if t == restic.DataBlob {
+		err = r.be.SaveDirect(ctx, h, rd)
+	} else {
+		err = r.be.Save(ctx, h, rd)
+	}
 	if err != nil {
 		debug.Log("Save(%v) error: %v", h, err)
 		return err
 	}
 
 	debug.Log("saved as %v", h)
-
-	if t == restic.TreeBlob && r.Cache != nil {
-		debug.Log("saving tree pack file in cache")
-
-		_, err = p.tmpfile.Seek(0, 0)
-		if err != nil {
-			return errors.Wrap(err, "Seek")
-		}
-
-		err := r.Cache.Save(h, p.tmpfile)
-		if err != nil {
-			return err
-		}
-	}
 
 	err = p.tmpfile.Close()
 	if err != nil {

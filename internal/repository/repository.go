@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/restic/restic/internal/cache"
 	"github.com/restic/restic/internal/crypto"
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
@@ -22,7 +21,7 @@ import (
 
 // Repository is used to access a repository in a backend.
 type Repository struct {
-	be      restic.Backend
+	be      restic.CachedBackend
 	cfg     restic.Config
 	key     *crypto.Key
 	keyName string
@@ -34,7 +33,7 @@ type Repository struct {
 }
 
 // New returns a new repository with backend be.
-func New(be restic.Backend) *Repository {
+func New(be restic.CachedBackend) *Repository {
 	repo := &Repository{
 		be:     be,
 		idx:    NewMasterIndex(),
@@ -107,7 +106,7 @@ func (r *Repository) LoadAndDecrypt(ctx context.Context, buf []byte, t restic.Fi
 
 // sortCachedPacks moves all cached pack files to the front of blobs.
 func (r *Repository) sortCachedPacks(blobs []restic.PackedBlob) []restic.PackedBlob {
-	if r.Cache == nil {
+	if len(blobs) == 1 {
 		return blobs
 	}
 
@@ -115,7 +114,7 @@ func (r *Repository) sortCachedPacks(blobs []restic.PackedBlob) []restic.PackedB
 	noncached := make([]restic.PackedBlob, 0, len(blobs)/2)
 
 	for _, blob := range blobs {
-		if r.Cache.Has(restic.Handle{Type: restic.DataFile, Name: blob.PackID.String()}) {
+		if r.be.IsCached(context.TODO(), restic.Handle{Type: restic.DataFile, Name: blob.PackID.String()}) {
 			cached = append(cached, blob)
 			continue
 		}
@@ -158,7 +157,7 @@ func (r *Repository) loadBlob(ctx context.Context, id restic.ID, t restic.BlobTy
 
 		plaintextBuf = plaintextBuf[:blob.Length]
 
-		n, err := restic.ReadAt(ctx, r.be, h, int64(blob.Offset), plaintextBuf)
+		n, err := restic.ReadAt(ctx, r.be, h, t, int64(blob.Offset), plaintextBuf)
 		if err != nil {
 			debug.Log("error loading blob %v: %v", blob, err)
 			lastError = err
@@ -334,7 +333,7 @@ func (r *Repository) Flush(ctx context.Context) error {
 }
 
 // Backend returns the backend for the repository.
-func (r *Repository) Backend() restic.Backend {
+func (r *Repository) Backend() restic.CachedBackend {
 	return r.be
 }
 
@@ -494,14 +493,10 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 // PrepareCache initializes the local cache. indexIDs is the list of IDs of
 // index files still present in the repo.
 func (r *Repository) PrepareCache(indexIDs restic.IDSet) error {
-	if r.Cache == nil {
-		return nil
-	}
-
 	debug.Log("prepare cache with %d index files", len(indexIDs))
 
 	// clear old index files
-	err := r.Cache.Clear(restic.IndexFile, indexIDs)
+	err := r.be.ClearCache(restic.IndexFile, indexIDs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error clearing index files in cache: %v\n", err)
 	}
@@ -514,39 +509,9 @@ func (r *Repository) PrepareCache(indexIDs restic.IDSet) error {
 	}
 
 	// clear old data files
-	err = r.Cache.Clear(restic.DataFile, packs)
+	err = r.be.ClearCache(restic.DataFile, packs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error clearing data files in cache: %v\n", err)
-	}
-
-	treePacks := restic.NewIDSet()
-	for _, idx := range r.idx.All() {
-		for _, id := range idx.TreePacks() {
-			treePacks.Insert(id)
-		}
-	}
-
-	// use readahead
-	debug.Log("using readahead")
-	cache := r.Cache.(*cache.Cache)
-	cache.PerformReadahead = func(h restic.Handle) bool {
-		if h.Type != restic.DataFile {
-			debug.Log("no readahead for %v, is not data file", h)
-			return false
-		}
-
-		id, err := restic.ParseID(h.Name)
-		if err != nil {
-			debug.Log("no readahead for %v, invalid ID", h)
-			return false
-		}
-
-		if treePacks.Has(id) {
-			debug.Log("perform readahead for %v", h)
-			return true
-		}
-		debug.Log("no readahead for %v, not tree file", h)
-		return false
 	}
 
 	return nil

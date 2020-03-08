@@ -36,6 +36,8 @@ func Open(cfg Config) (*Local, error) {
 	return &Local{Config: cfg, Layout: l}, nil
 }
 
+var ErrConfigExists = errors.New("config file already exists")
+
 // Create creates all the necessary files and directories for a new local
 // backend at dir. Afterwards a new config blob should be created.
 func Create(cfg Config) (*Local, error) {
@@ -51,18 +53,18 @@ func Create(cfg Config) (*Local, error) {
 		Layout: l,
 	}
 
-	// test if config file already exists
-	_, err = fs.Lstat(be.Filename(restic.Handle{Type: restic.ConfigFile}))
-	if err == nil {
-		return nil, errors.New("config file already exists")
-	}
-
 	// create paths for data and refs
 	for _, d := range be.Paths() {
 		err := fs.MkdirAll(d, backend.Modes.Dir)
 		if err != nil {
 			return nil, errors.Wrap(err, "MkdirAll")
 		}
+	}
+
+	// test if config file already exists
+	_, err = fs.Lstat(be.Filename(restic.Handle{Type: restic.ConfigFile}))
+	if err == nil {
+		return be, ErrConfigExists
 	}
 
 	return be, nil

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/restic/restic/internal/archiver"
+	"github.com/restic/restic/internal/cache"
 	"github.com/restic/restic/internal/checker"
 	"github.com/restic/restic/internal/repository"
 	"github.com/restic/restic/internal/restic"
@@ -329,7 +330,7 @@ func TestCheckerModifiedData(t *testing.T) {
 	t.Logf("archived as %v", sn.ID().Str())
 
 	beError := &errorBackend{Backend: repo.Backend()}
-	checkRepo := repository.New(beError)
+	checkRepo := repository.New(cache.CachedBackend(beError))
 	test.OK(t, checkRepo.SearchKey(context.TODO(), test.TestPassword, 5, ""))
 
 	chkr := checker.New(checkRepo)

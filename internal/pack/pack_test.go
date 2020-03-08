@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/restic/restic/internal/backend/mem"
+	"github.com/restic/restic/internal/cache"
 	"github.com/restic/restic/internal/crypto"
 	"github.com/restic/restic/internal/pack"
 	"github.com/restic/restic/internal/restic"
@@ -123,7 +124,7 @@ func TestUnpackReadSeeker(t *testing.T) {
 
 	bufs, packData, packSize := newPack(t, k, testLens)
 
-	b := mem.New()
+	b := cache.CachedBackend(mem.New())
 	id := restic.Hash(packData)
 
 	handle := restic.Handle{Type: restic.DataFile, Name: id.String()}
@@ -136,7 +137,7 @@ func TestShortPack(t *testing.T) {
 
 	bufs, packData, packSize := newPack(t, k, []int{23})
 
-	b := mem.New()
+	b := cache.CachedBackend(mem.New())
 	id := restic.Hash(packData)
 
 	handle := restic.Handle{Type: restic.DataFile, Name: id.String()}

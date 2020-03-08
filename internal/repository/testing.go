@@ -7,6 +7,7 @@ import (
 
 	"github.com/restic/restic/internal/backend/local"
 	"github.com/restic/restic/internal/backend/mem"
+	"github.com/restic/restic/internal/cache"
 	"github.com/restic/restic/internal/crypto"
 	"github.com/restic/restic/internal/restic"
 	"github.com/restic/restic/internal/test"
@@ -51,7 +52,7 @@ func TestRepositoryWithBackend(t testing.TB, be restic.Backend) (r restic.Reposi
 		be, beCleanup = TestBackend(t)
 	}
 
-	repo := New(be)
+	repo := New(cache.CachedBackend(be))
 
 	cfg := restic.TestCreateConfig(t, testChunkerPol)
 	err := repo.init(context.TODO(), test.TestPassword, cfg)
@@ -98,7 +99,7 @@ func TestOpenLocal(t testing.TB, dir string) (r restic.Repository) {
 		t.Fatal(err)
 	}
 
-	repo := New(be)
+	repo := New(cache.CachedBackend(be))
 	err = repo.SearchKey(context.TODO(), test.TestPassword, 10, "")
 	if err != nil {
 		t.Fatal(err)

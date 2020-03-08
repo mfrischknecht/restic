@@ -47,6 +47,7 @@ const TimeFormat = "2006-01-02 15:04:05"
 // GlobalOptions hold all global options for restic.
 type GlobalOptions struct {
 	Repo            string
+	CacheRepo       string
 	PasswordFile    string
 	PasswordCommand string
 	KeyHint         string
@@ -95,6 +96,7 @@ func init() {
 
 	f := cmdRoot.PersistentFlags()
 	f.StringVarP(&globalOptions.Repo, "repo", "r", os.Getenv("RESTIC_REPOSITORY"), "repository to backup to or restore from (default: $RESTIC_REPOSITORY)")
+	f.StringVarP(&globalOptions.CacheRepo, "cache-repo", "", "", "repository to use as cache")
 	f.StringVarP(&globalOptions.PasswordFile, "password-file", "p", os.Getenv("RESTIC_PASSWORD_FILE"), "read the repository password from a file (default: $RESTIC_PASSWORD_FILE)")
 	f.StringVarP(&globalOptions.KeyHint, "key-hint", "", os.Getenv("RESTIC_KEY_HINT"), "key ID of key to try decrypting first (default: $RESTIC_KEY_HINT)")
 	f.StringVarP(&globalOptions.PasswordCommand, "password-command", "", os.Getenv("RESTIC_PASSWORD_COMMAND"), "specify a shell command to obtain a password (default: $RESTIC_PASSWORD_COMMAND)")
@@ -364,7 +366,19 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 		Warnf("%v returned error, retrying after %v: %v\n", msg, d, err)
 	})
 
-	s := repository.New(be)
+	cbe := cache.CachedBackend(be)
+
+	// If --cache-repo is given, use it as cache
+	if opts.CacheRepo != "" {
+		cacheBe, err := open(opts.CacheRepo, opts, opts.extended)
+		if err != nil {
+			return nil, err
+		}
+		repoCache := cache.Cache{Backend: cacheBe}
+		cbe = repoCache.Wrap(cbe)
+	}
+
+	s := repository.New(cbe)
 
 	passwordTriesLeft := 1
 	if stdinIsTerminal() && opts.password == "" {

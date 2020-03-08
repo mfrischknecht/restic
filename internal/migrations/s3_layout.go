@@ -23,7 +23,7 @@ type S3Layout struct{}
 
 // Check tests whether the migration can be applied.
 func (m *S3Layout) Check(ctx context.Context, repo restic.Repository) (bool, error) {
-	be, ok := repo.Backend().(*s3.Backend)
+	be, ok := repo.Backend().OrigBackend().(*s3.Backend)
 	if !ok {
 		debug.Log("backend is not s3")
 		return false, nil
@@ -71,7 +71,7 @@ func (m *S3Layout) moveFiles(ctx context.Context, be *s3.Backend, l backend.Layo
 
 // Apply runs the migration.
 func (m *S3Layout) Apply(ctx context.Context, repo restic.Repository) error {
-	be, ok := repo.Backend().(*s3.Backend)
+	be, ok := repo.Backend().OrigBackend().(*s3.Backend)
 	if !ok {
 		debug.Log("backend is not s3")
 		return errors.New("backend is not s3")

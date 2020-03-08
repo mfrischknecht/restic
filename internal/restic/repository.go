@@ -11,7 +11,7 @@ import (
 type Repository interface {
 
 	// Backend returns the backend used by the repository
-	Backend() Backend
+	Backend() CachedBackend
 
 	Key() *crypto.Key
 

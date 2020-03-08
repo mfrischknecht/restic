@@ -142,6 +142,12 @@ func ParseLayout(repo Filesystem, layout, defaultLayout, path string) (l Layout,
 			Path: path,
 			Join: repo.Join,
 		}
+	case "cache":
+		l = &CacheLayout{
+			Path: path,
+			Join: repo.Join,
+		}
+
 	case "s3legacy":
 		l = &S3LegacyLayout{
 			Path: path,

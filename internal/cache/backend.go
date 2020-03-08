@@ -6,12 +6,14 @@ import (
 	"sync"
 
 	"github.com/restic/restic/internal/debug"
+	"github.com/restic/restic/internal/errors"
+	"github.com/restic/restic/internal/fs"
 	"github.com/restic/restic/internal/restic"
 )
 
 // Backend wraps a restic.Backend and adds a cache.
 type Backend struct {
-	restic.Backend
+	restic.CachedBackend
 	*Cache
 
 	// inProgress contains the handle for all files that are currently
@@ -21,39 +23,31 @@ type Backend struct {
 	inProgress      map[restic.Handle]chan struct{}
 }
 
-// ensure cachedBackend implements restic.Backend
-var _ restic.Backend = &Backend{}
+// ensure cachedBackend implements restic.CachedBackend
+var _ restic.CachedBackend = &Backend{}
 
-func newBackend(be restic.Backend, c *Cache) *Backend {
+func newBackend(be restic.CachedBackend, c *Cache) *Backend {
 	return &Backend{
-		Backend:    be,
-		Cache:      c,
-		inProgress: make(map[restic.Handle]chan struct{}),
+		CachedBackend: be,
+		Cache:         c,
+		inProgress:    make(map[restic.Handle]chan struct{}),
 	}
 }
 
 // Remove deletes a file from the backend and the cache if it has been cached.
 func (b *Backend) Remove(ctx context.Context, h restic.Handle) error {
 	debug.Log("cache Remove(%v)", h)
-	err := b.Backend.Remove(ctx, h)
+	err := b.CachedBackend.Remove(ctx, h)
 	if err != nil {
 		return err
 	}
 
-	return b.Cache.Remove(h)
-}
-
-var autoCacheTypes = map[restic.FileType]struct{}{
-	restic.IndexFile:    {},
-	restic.SnapshotFile: {},
+	_ = b.Cache.Remove(ctx, h)
+	return nil
 }
 
 // Save stores a new file in the backend and the cache.
 func (b *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
-	if _, ok := autoCacheTypes[h.Type]; !ok {
-		return b.Backend.Save(ctx, h, rd)
-	}
-
 	debug.Log("Save(%v): auto-store in the cache", h)
 
 	// make sure the reader is at the start
@@ -63,7 +57,7 @@ func (b *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindRea
 	}
 
 	// first, save in the backend
-	err = b.Backend.Save(ctx, h, rd)
+	err = b.CachedBackend.Save(ctx, h, rd)
 	if err != nil {
 		return err
 	}
@@ -74,10 +68,10 @@ func (b *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindRea
 		return err
 	}
 
-	err = b.Cache.Save(h, rd)
+	err = b.Cache.Save(ctx, h, rd)
 	if err != nil {
 		debug.Log("unable to save %v to cache: %v", h, err)
-		_ = b.Cache.Remove(h)
+		_ = b.Cache.Remove(ctx, h)
 		return nil
 	}
 
@@ -107,17 +101,37 @@ func (b *Backend) cacheFile(ctx context.Context, h restic.Handle) error {
 	}
 
 	// test again, maybe the file was cached in the meantime
-	if !b.Cache.Has(h) {
-
+	if !b.Cache.Has(ctx, h) {
 		// nope, it's still not in the cache, pull it from the repo and save it
+		tmpfile, err := fs.TempFile("", "restic-temp-cache-")
+		if err != nil {
+			return errors.Wrap(err, "fs.TempFile")
+		}
 
-		err := b.Backend.Load(ctx, h, 0, 0, func(rd io.Reader) error {
-			return b.Cache.Save(h, rd)
+		err = b.CachedBackend.Load(ctx, h, 0, 0, func(rd io.Reader) error {
+			_, err := io.Copy(tmpfile, rd)
+			if err != nil {
+				return err
+			}
+			return nil
 		})
+
 		if err != nil {
 			// try to remove from the cache, ignore errors
-			_ = b.Cache.Remove(h)
+			_ = b.Cache.Remove(ctx, h)
 		}
+
+		tmpRd, err := restic.NewFileReader(tmpfile)
+		if err != nil {
+			return err
+		}
+
+		tmpRd.Rewind()
+		err = b.Cache.Save(ctx, h, tmpRd)
+		if err != nil {
+			return err
+		}
+
 	}
 
 	// signal other waiting goroutines that the file may now be cached
@@ -134,18 +148,12 @@ func (b *Backend) cacheFile(ctx context.Context, h restic.Handle) error {
 // loadFromCacheOrDelegate will try to load the file from the cache, and fall
 // back to the backend if that fails.
 func (b *Backend) loadFromCacheOrDelegate(ctx context.Context, h restic.Handle, length int, offset int64, consumer func(rd io.Reader) error) error {
-	rd, err := b.Cache.Load(h, length, offset)
+	err := b.Cache.Load(ctx, h, length, offset, consumer)
 	if err != nil {
 		debug.Log("error caching %v: %v, falling back to backend", h, err)
-		return b.Backend.Load(ctx, h, length, offset, consumer)
+		return b.CachedBackend.Load(ctx, h, length, offset, consumer)
 	}
-
-	err = consumer(rd)
-	if err != nil {
-		_ = rd.Close() // ignore secondary errors
-		return err
-	}
-	return rd.Close()
+	return nil
 }
 
 // Load loads a file from the cache or the backend.
@@ -160,41 +168,9 @@ func (b *Backend) Load(ctx context.Context, h restic.Handle, length int, offset 
 		debug.Log("downloading %v finished", h)
 	}
 
-	if b.Cache.Has(h) {
+	if b.Cache.Has(ctx, h) {
 		debug.Log("Load(%v, %v, %v) from cache", h, length, offset)
-		rd, err := b.Cache.Load(h, length, offset)
-		if err == nil {
-			err = consumer(rd)
-			if err != nil {
-				rd.Close() // ignore secondary errors
-				return err
-			}
-			return rd.Close()
-		}
-		debug.Log("error loading %v from cache: %v", h, err)
-	}
-
-	// partial file requested
-	if offset != 0 || length != 0 {
-		if b.Cache.PerformReadahead(h) {
-			debug.Log("performing readahead for %v", h)
-
-			err := b.cacheFile(ctx, h)
-			if err == nil {
-				return b.loadFromCacheOrDelegate(ctx, h, length, offset, consumer)
-			}
-
-			debug.Log("error caching %v: %v", h, err)
-		}
-
-		debug.Log("Load(%v, %v, %v): partial file requested, delegating to backend", h, length, offset)
-		return b.Backend.Load(ctx, h, length, offset, consumer)
-	}
-
-	// if we don't automatically cache this file type, fall back to the backend
-	if _, ok := autoCacheFiles[h.Type]; !ok {
-		debug.Log("Load(%v, %v, %v): delegating to backend", h, length, offset)
-		return b.Backend.Load(ctx, h, length, offset, consumer)
+		return b.Cache.Load(ctx, h, length, offset, consumer)
 	}
 
 	debug.Log("auto-store %v in the cache", h)
@@ -204,7 +180,7 @@ func (b *Backend) Load(ctx context.Context, h restic.Handle, length int, offset 
 	}
 
 	debug.Log("error caching %v: %v, falling back to backend", h, err)
-	return b.Backend.Load(ctx, h, length, offset, consumer)
+	return b.CachedBackend.Load(ctx, h, length, offset, consumer)
 }
 
 // Stat tests whether the backend has a file. If it does not exist but still
@@ -212,11 +188,11 @@ func (b *Backend) Load(ctx context.Context, h restic.Handle, length int, offset 
 func (b *Backend) Stat(ctx context.Context, h restic.Handle) (restic.FileInfo, error) {
 	debug.Log("cache Stat(%v)", h)
 
-	fi, err := b.Backend.Stat(ctx, h)
+	fi, err := b.CachedBackend.Stat(ctx, h)
 	if err != nil {
-		if b.Backend.IsNotExist(err) {
+		if b.CachedBackend.IsNotExist(err) {
 			// try to remove from the cache, ignore errors
-			_ = b.Cache.Remove(h)
+			_ = b.Cache.Remove(ctx, h)
 		}
 
 		return fi, err
@@ -227,5 +203,23 @@ func (b *Backend) Stat(ctx context.Context, h restic.Handle) (restic.FileInfo, e
 
 // IsNotExist returns true if the error is caused by a non-existing file.
 func (b *Backend) IsNotExist(err error) bool {
-	return b.Backend.IsNotExist(err)
+	return b.CachedBackend.IsNotExist(err)
+}
+
+// IsNotExist returns true if the error is caused by a non-existing file.
+func (b *Backend) ClearCache(tpe restic.FileType, IDs restic.IDSet) error {
+	// First clean all and then return errors if occured
+	err1 := b.CachedBackend.ClearCache(tpe, IDs)
+	err2 := b.Cache.Clear(tpe, IDs)
+	if err1 != nil {
+		return err1
+	}
+	if err2 != nil {
+		return err2
+	}
+	return nil
+}
+
+func (b *Backend) IsCached(ctx context.Context, h restic.Handle) bool {
+	return b.Cache.Has(ctx, h)
 }
