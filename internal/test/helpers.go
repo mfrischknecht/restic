@@ -3,11 +3,11 @@ package test
 import (
 	"compress/bzip2"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -111,16 +111,10 @@ func SetupTarTestFixture(t testing.TB, outputDir, tarFile string) {
 		rd = input
 	}
 
-	cmd := exec.Command("tar", "xf", "-")
-	cmd.Dir = outputDir
+	err = extactTar(context.TODO(), rd, outputDir)
 
-	cmd.Stdin = rd
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	err = cmd.Run()
 	if err != nil {
-		t.Fatalf("running command %v %v failed: %v", cmd.Path, cmd.Args, err)
+		t.Fatalf("extracting tar returned error: %v", err)
 	}
 }
 
