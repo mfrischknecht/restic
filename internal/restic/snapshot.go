@@ -208,6 +208,57 @@ func (sn *Snapshot) HasPaths(paths []string) bool {
 	return true
 }
 
+// isSubPath returns whether path is a subpath of givenPath
+func isSubPath(path, givenPath string) bool {
+	pattern := givenPath + string(filepath.Separator) + "*"
+	matched, _ := filepath.Match(pattern, path)
+	return matched
+}
+
+// MatchPaths returns true if the snapshot has at least one path
+// or subpath or superpath of the given paths
+func (sn *Snapshot) MatchPaths(paths []string) bool {
+	for _, path := range paths {
+		for _, snPath := range sn.Paths {
+			if path == snPath || isSubPath(snPath, path) || isSubPath(path, snPath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Supersedes returns whether sn1 supersedes sn2 w.r.t. the one of the given paths.
+// "supersedes" means:
+// - the snapshot is newer
+// - for all relevant paths in sn2, sn1 has either identical path or a superpath
+func (sn1 *Snapshot) Supersedes(sn2 *Snapshot, paths []string) bool {
+	if sn1.Time.Before(sn2.Time) {
+		return false
+	}
+	for _, path := range paths {
+		for _, sn2Path := range sn2.Paths {
+			// ignore paths from sn2 that are not matching
+			if sn2Path != path && !isSubPath(sn2Path, path) && !isSubPath(path, sn2Path) {
+				continue
+			}
+			foundPath := false
+			for _, sn1Path := range sn1.Paths {
+				// sn1 supersedes
+				if sn1Path == path || isSubPath(path, sn1Path) ||
+					(isSubPath(sn1Path, path) && isSubPath(sn2Path, sn1Path)) {
+					foundPath = true
+					break
+				}
+			}
+			if !foundPath {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // HasHostname returns true if either
 // - the snapshot hostname is in the list of the given hostnames, or
 // - the list of given hostnames is empty
