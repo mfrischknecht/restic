@@ -361,3 +361,5 @@ The ``prune`` command accepts the following options:
 -  ``--dry-run`` only show what ``prune`` would do.
 
 -  ``--verbose`` increased verbosity shows additional statistics for ``prune``.
+
+-  ``--json`` gives the statistics in JSON format.
