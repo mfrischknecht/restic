@@ -156,11 +156,13 @@ func runPruneWithRepo(opts PruneOptions, gopts GlobalOptions, repo *repository.R
 	// we do not need index updates while pruning!
 	repo.DisableAutoIndexUpdate()
 
-	if repo.Cache == nil {
+	if repo.Cache == nil && !gopts.JSON {
 		Print("warning: running prune without a cache, this may be very slow!\n")
 	}
 
-	Verbosef("loading indexes...\n")
+	if !gopts.JSON {
+		Verbosef("loading indexes...\n")
+	}
 	err := repo.LoadIndex(gopts.ctx)
 	if err != nil {
 		return err
@@ -258,7 +260,9 @@ func planPrune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, u
 
 	ctx := gopts.ctx
 
-	Verbosef("searching used packs...\n")
+	if !gopts.JSON {
+		Verbosef("searching used packs...\n")
+	}
 
 	keepBlobs := restic.NewBlobSet()
 	duplicateBlobs := restic.NewBlobSet()
@@ -332,7 +336,9 @@ func planPrune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, u
 		indexPack[blob.PackID] = ip
 	}
 
-	Verbosef("collecting packs for deletion and repacking\n")
+	if !gopts.JSON {
+		Verbosef("collecting packs for deletion and repacking\n")
+	}
 	removePacksFirst := restic.NewIDSet()
 	removePacks := restic.NewIDSet()
 	repackPacks := restic.NewIDSet()
@@ -348,12 +354,14 @@ func planPrune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, u
 	}
 
 	// loop over all packs and decide what to do
-	bar := newProgressMax(!gopts.Quiet, uint64(len(indexPack)), "packs processed")
+	bar := newProgressMax(!gopts.Quiet && !gopts.JSON, uint64(len(indexPack)), "packs processed")
 	err = repo.List(ctx, restic.PackFile, func(id restic.ID, packSize int64) error {
 		p, ok := indexPack[id]
 		if !ok {
 			// Pack was not referenced in index and is not used  => immediately remove!
-			Verboseff("will remove pack %v as it is unused and not indexed\n", id.Str())
+			if !gopts.JSON {
+				Verboseff("will remove pack %v as it is unused and not indexed\n", id.Str())
+			}
 			removePacksFirst.Insert(id)
 			stats.Size.Unref += uint64(packSize)
 			return nil
@@ -587,13 +595,17 @@ func doPrune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, pla
 
 	// unreferenced packs can be safely deleted first
 	if len(plan.removePacksFirst) != 0 {
-		Verbosef("deleting unreferenced packs\n")
+		if !gopts.JSON {
+			Verbosef("deleting unreferenced packs\n")
+		}
 		DeleteFiles(gopts, repo, plan.removePacksFirst, restic.PackFile)
 	}
 
 	if len(plan.repackPacks) != 0 {
-		Verbosef("repacking packs\n")
-		bar := newProgressMax(!gopts.Quiet, uint64(len(plan.repackPacks)), "packs repacked")
+		if !gopts.JSON {
+			Verbosef("repacking packs\n")
+		}
+		bar := newProgressMax(!gopts.Quiet && !gopts.JSON, uint64(len(plan.repackPacks)), "packs repacked")
 		_, err := repository.Repack(ctx, repo, plan.repackPacks, plan.keepBlobs, bar)
 		bar.Done()
 		if err != nil {
@@ -618,27 +630,35 @@ func doPrune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, pla
 	}
 
 	if len(plan.removePacks) != 0 {
-		Verbosef("removing %d old packs\n", len(plan.removePacks))
+		if !gopts.JSON {
+			Verbosef("removing %d old packs\n", len(plan.removePacks))
+		}
 		DeleteFiles(gopts, repo, plan.removePacks, restic.PackFile)
 	}
 
-	Verbosef("done\n")
+	if !gopts.JSON {
+		Verbosef("done\n")
+	}
 	return nil
 }
 
 func rebuildIndexFiles(gopts GlobalOptions, repo restic.Repository, removePacks restic.IDSet, extraObsolete restic.IDs) error {
-	Verbosef("rebuilding index\n")
+	if !gopts.JSON {
+		Verbosef("rebuilding index\n")
+	}
 
 	idx := (repo.Index()).(*repository.MasterIndex)
 	packcount := uint64(len(idx.Packs(removePacks)))
-	bar := newProgressMax(!gopts.Quiet, packcount, "packs processed")
+	bar := newProgressMax(!gopts.Quiet && !gopts.JSON, packcount, "packs processed")
 	obsoleteIndexes, err := idx.Save(gopts.ctx, repo, removePacks, extraObsolete, bar)
 	bar.Done()
 	if err != nil {
 		return err
 	}
 
-	Verbosef("deleting obsolete index files\n")
+	if !gopts.JSON {
+		Verbosef("deleting obsolete index files\n")
+	}
 	return DeleteFilesChecked(gopts, repo, obsoleteIndexes, restic.IndexFile)
 }
 
@@ -646,7 +666,9 @@ func getUsedBlobs(gopts GlobalOptions, repo restic.Repository, ignoreSnapshots r
 	ctx := gopts.ctx
 
 	var snapshotTrees restic.IDs
-	Verbosef("loading all snapshots...\n")
+	if !gopts.JSON {
+		Verbosef("loading all snapshots...\n")
+	}
 	err = restic.ForAllSnapshots(gopts.ctx, repo, ignoreSnapshots,
 		func(id restic.ID, sn *restic.Snapshot, err error) error {
 			debug.Log("add snapshot %v (tree %v, error %v)", id, *sn.Tree, err)
@@ -660,11 +682,13 @@ func getUsedBlobs(gopts GlobalOptions, repo restic.Repository, ignoreSnapshots r
 		return nil, err
 	}
 
-	Verbosef("finding data that is still in use for %d snapshots\n", len(snapshotTrees))
+	if !gopts.JSON {
+		Verbosef("finding data that is still in use for %d snapshots\n", len(snapshotTrees))
+	}
 
 	usedBlobs = restic.NewBlobSet()
 
-	bar := newProgressMax(!gopts.Quiet, uint64(len(snapshotTrees)), "snapshots")
+	bar := newProgressMax(!gopts.Quiet && !gopts.JSON, uint64(len(snapshotTrees)), "snapshots")
 	defer bar.Done()
 
 	err = restic.FindUsedBlobs(ctx, repo, snapshotTrees, usedBlobs, bar)
