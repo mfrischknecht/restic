@@ -174,12 +174,11 @@ func runPruneWithRepo(opts PruneOptions, gopts GlobalOptions, repo *repository.R
 }
 
 type packInfo struct {
-	usedBlobs      uint
-	unusedBlobs    uint
-	duplicateBlobs uint
-	usedSize       uint64
-	unusedSize     uint64
-	tpe            restic.BlobType
+	usedBlobs   uint
+	unusedBlobs uint
+	usedSize    uint64
+	unusedSize  uint64
+	tpe         restic.BlobType
 }
 
 type packInfoWithID struct {
@@ -221,7 +220,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	Verbosef("searching used packs...\n")
 
 	keepBlobs := restic.NewBlobSet()
-	duplicateBlobs := restic.NewBlobSet()
+	duplicateBlobs := make(map[restic.BlobHandle]uint8)
 
 	// iterate over all blobs in index to find out which blobs are duplicates
 	for blob := range repo.Index().Each(ctx) {
@@ -234,7 +233,17 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 			stats.size.used += size
 			stats.blobs.used++
 		case keepBlobs.Has(bh): // duplicate blob
-			duplicateBlobs.Insert(bh)
+			count, ok := duplicateBlobs[bh]
+			if !ok {
+				count = 2 // this one is already the second blob!
+			} else {
+				count++
+				if count == 0 {
+					// catch uint8 overflow
+					panic("too many duplicates, prune can only handly up to 255!")
+				}
+			}
+			duplicateBlobs[bh] = count
 			stats.size.duplicate += size
 			stats.blobs.duplicate++
 		default:
@@ -277,10 +286,9 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 
 		bh := blob.BlobHandle
 		size := uint64(blob.Length)
+		_, isDuplicate := duplicateBlobs[bh]
 		switch {
-		case duplicateBlobs.Has(bh): // duplicate blob
-			ip.usedSize += size
-			ip.duplicateBlobs++
+		case isDuplicate: // duplicate blobs will be handled later
 		case keepBlobs.Has(bh): // used blob, not duplicate
 			ip.usedSize += size
 			ip.usedBlobs++
@@ -292,19 +300,52 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		indexPack[blob.PackID] = ip
 	}
 
+	// if duplicate blobs exist, those will be set to either "used" or "unused":
+	// - mark only one occurency of duplicate blobs as used
+	// - if there are already some used blobs in a pack, possibly mark duplicates in this pack as "used"
+	// - if there are no used blobs in a pack, possibly mark duplicates as "usused"
+	if len(duplicateBlobs) > 0 {
+		// iterate again over all blobs in index (this is pretty cheap, all in-mem)
+		for blob := range repo.Index().Each(ctx) {
+			bh := blob.BlobHandle
+			count, isDuplicate := duplicateBlobs[bh]
+			if !isDuplicate {
+				continue
+			}
+
+			ip := indexPack[blob.PackID]
+			size := uint64(blob.Length)
+			switch {
+			case count == 0:
+				// used duplicate exists ->  mark as unused
+				ip.unusedSize += size
+				ip.unusedBlobs++
+			case ip.usedBlobs > 0, count == 1:
+				// other used blobs in pack or "last" occurency ->  mark as used
+				ip.usedSize += size
+				ip.usedBlobs++
+				// let other occurences be marked as unused
+				duplicateBlobs[bh] = 0
+			default:
+				// mark as unused and decrease counter
+				ip.unusedSize += size
+				ip.unusedBlobs++
+				duplicateBlobs[bh] = count - 1
+			}
+			// update indexPack
+			indexPack[blob.PackID] = ip
+		}
+	}
+
 	Verbosef("collecting packs for deletion and repacking\n")
 	removePacksFirst := restic.NewIDSet()
 	removePacks := restic.NewIDSet()
 	repackPacks := restic.NewIDSet()
 
 	var repackCandidates []packInfoWithID
-	repackAllPacksWithDuplicates := true
 
 	keep := func(p packInfo) {
 		stats.packs.keep++
-		if p.duplicateBlobs > 0 {
-			repackAllPacksWithDuplicates = false
-		}
 	}
 
 	// loop over all packs and decide what to do
@@ -320,7 +361,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		}
 
 		if p.unusedSize+p.usedSize != uint64(packSize) &&
-			!(p.usedBlobs == 0 && p.duplicateBlobs == 0) {
+			p.usedBlobs != 0 {
 			// Pack size does not fit and pack is needed => error
 			// If the pack is not needed, this is no error, the pack can
 			// and will be simply removed, see below.
@@ -331,7 +372,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 
 		// statistics
 		switch {
-		case p.usedBlobs == 0 && p.duplicateBlobs == 0:
+		case p.usedBlobs == 0:
 			stats.packs.unused++
 		case p.unusedBlobs == 0:
 			stats.packs.used++
@@ -341,7 +382,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 
 		// decide what to do
 		switch {
-		case p.usedBlobs == 0 && p.duplicateBlobs == 0:
+		case p.usedBlobs == 0:
 			// All blobs in pack are no longer used => remove pack!
 			removePacks.Insert(id)
 			stats.blobs.remove += p.unusedBlobs
@@ -351,8 +392,8 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 			// if this is a data pack and --repack-cacheable-only is set => keep pack!
 			keep(p)
 
-		case p.unusedBlobs == 0 && p.duplicateBlobs == 0 && p.tpe != restic.InvalidBlob:
-			// All blobs in pack are used and not duplicates/mixed => keep pack!
+		case p.unusedBlobs == 0 && p.tpe != restic.InvalidBlob:
+			// All blobs in pack are used and not mixed => keep pack!
 			keep(p)
 
 		default:
@@ -374,7 +415,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	// missing packs that are not needed can be ignored
 	ignorePacks := restic.NewIDSet()
 	for id, p := range indexPack {
-		if p.usedBlobs == 0 && p.duplicateBlobs == 0 {
+		if p.usedBlobs == 0 {
 			ignorePacks.Insert(id)
 			stats.blobs.remove += p.unusedBlobs
 			stats.size.remove += p.unusedSize
@@ -403,15 +444,11 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	// This is equivalent to sorting by unused / total space.
 	// Instead of unused[i] / used[i] > unused[j] / used[j] we use
 	// unused[i] * used[j] > unused[j] * used[i] as uint32*uint32 < uint64
-	// Morover duplicates and packs containing trees are sorted to the beginning
+	// Morover packs containing trees are sorted to the beginning
 	sort.Slice(repackCandidates, func(i, j int) bool {
 		pi := repackCandidates[i].packInfo
 		pj := repackCandidates[j].packInfo
 		switch {
-		case pi.duplicateBlobs > 0 && pj.duplicateBlobs == 0:
-			return true
-		case pj.duplicateBlobs > 0 && pi.duplicateBlobs == 0:
-			return false
 		case pi.tpe != restic.DataBlob && pj.tpe == restic.DataBlob:
 			return true
 		case pj.tpe != restic.DataBlob && pi.tpe == restic.DataBlob:
@@ -422,7 +459,7 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 
 	repack := func(id restic.ID, p packInfo) {
 		repackPacks.Insert(id)
-		stats.blobs.repack += p.unusedBlobs + p.duplicateBlobs + p.usedBlobs
+		stats.blobs.repack += p.unusedBlobs + p.usedBlobs
 		stats.size.repack += p.unusedSize + p.usedSize
 		stats.blobs.repackrm += p.unusedBlobs
 		stats.size.repackrm += p.unusedSize
@@ -440,8 +477,8 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		case reachedRepackSize:
 			keep(p.packInfo)
 
-		case p.duplicateBlobs > 0, p.tpe != restic.DataBlob:
-			// repacking duplicates/non-data is only limited by repackSize
+		case p.tpe != restic.DataBlob:
+			// repacking non-data packs is only limited by repackSize
 			repack(p.ID, p.packInfo)
 
 		case reachedUnusedSizeAfter:
@@ -453,10 +490,18 @@ func prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		}
 	}
 
-	// if all duplicates are repacked, print out correct statistics
-	if repackAllPacksWithDuplicates {
-		stats.blobs.repackrm += stats.blobs.duplicate
-		stats.size.repackrm += stats.size.duplicate
+	if len(repackPacks) != 0 {
+		// when repacking, we do not want to keep blobs which are
+		// already contained in kept packs, so delete them from keepBlobs
+		for blob := range repo.Index().Each(ctx) {
+			if removePacks.Has(blob.PackID) || repackPacks.Has(blob.PackID) {
+				continue
+			}
+			keepBlobs.Delete(blob.BlobHandle)
+		}
+	} else {
+		// keepBlobs is only needed if packs are repacked
+		keepBlobs = nil
 	}
 
 	Verboseff("\nused:        %10d blobs / %s\n", stats.blobs.used, formatBytes(stats.size.used))
